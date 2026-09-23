@@ -1,6 +1,5 @@
 package dev.qlipbod.app.linux.daemon
 
-import dev.qlipbod.app.linux.transport.PeerConnection
 import dev.qlipbod.sync.protocol.HandshakeException
 import dev.qlipbod.sync.protocol.UnverifiedPeerException
 import java.net.ServerSocket
@@ -21,24 +20,6 @@ import kotlin.test.assertTrue
  *   clip can be applied ("unpaired, not an error", plan §9)
  */
 class SyncDaemonStreamTest {
-
-    /** Polls until [condition] or fails after [timeoutMs]. */
-    private fun await(timeoutMs: Long = 5_000, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (!condition()) {
-            check(System.currentTimeMillis() < deadline) { "timed out awaiting condition" }
-            Thread.sleep(10)
-        }
-    }
-
-    /** Wires A (listener) and B (dialer) over loopback; both handshakes must resolve. */
-    private fun link(daemonA: SyncDaemon, daemonB: SyncDaemon): PeerConnection {
-        val server = ServerSocket(0)
-        val accept = thread(name = "test-accept") { daemonA.acceptOn(server) }
-        val connB = daemonB.connectTo("127.0.0.1", server.localPort)
-        accept.join()
-        return connB
-    }
 
     @Test
     fun `copies sync both ways over loopback with no loops`() {

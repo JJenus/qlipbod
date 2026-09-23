@@ -98,7 +98,7 @@ internal object PairingMac {
  * exchange for both sides; a [PairingOutcome.Failed.notice] carries the bad news back.
  */
 class PairingSession(
-    private val role: PairingRole,
+    val role: PairingRole,
     private val identity: LocalIdentity,
     private val pin: String,
 ) {
