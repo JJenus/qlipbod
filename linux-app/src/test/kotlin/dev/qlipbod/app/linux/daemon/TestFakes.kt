@@ -6,6 +6,7 @@ import dev.qlipbod.sync.crypto.Sha256
 import dev.qlipbod.sync.history.ClipHistory
 import dev.qlipbod.sync.history.HistoryStorage
 import dev.qlipbod.sync.identity.DeviceId
+import dev.qlipbod.sync.identity.GeneratedIdentity
 import dev.qlipbod.sync.identity.LocalIdentity
 import dev.qlipbod.sync.protocol.SyncEvent
 import dev.qlipbod.sync.trust.TrustStorage
@@ -61,6 +62,29 @@ internal fun trustFor(vararg seeds: String): TrustStore =
 internal fun newTestDaemon(seed: String, clipboard: ClipboardAdapter, trustStore: TrustStore): SyncDaemon =
     SyncDaemon(
         identity = TestIdentity(seed),
+        trustStore = trustStore,
+        clock = dev.qlipbod.sync.engine.InMemoryMonotonicClock(),
+        history = ClipHistory(capacity = 10, storage = MemHistoryStorage()),
+        clipboard = clipboard,
+    )
+
+/**
+ * Wire-level identities: real RSA self-signed certificates, because the connection
+ * handshake presents and verifies actual [dev.qlipbod.sync.identity.LocalIdentity.certDer]
+ * bytes (the seed-based [TestIdentity] has no certificate and is for clipboard-plane tests only).
+ */
+internal fun wireIdentity(seed: String): GeneratedIdentity = GeneratedIdentity.generate(DeviceId(seed))
+
+/** Trust store keyed by the fingerprints of exactly [ids] (separate instance per call). */
+internal fun wireTrust(vararg ids: GeneratedIdentity): TrustStore =
+    TrustStore(MemTrustStorage()).also { store ->
+        ids.forEach { store.add(it.fingerprint, it.deviceId.value) }
+    }
+
+/** A daemon holding a real identity, for handshake/stream tests. */
+internal fun newWireDaemon(id: GeneratedIdentity, clipboard: ClipboardAdapter, trustStore: TrustStore): SyncDaemon =
+    SyncDaemon(
+        identity = id,
         trustStore = trustStore,
         clock = dev.qlipbod.sync.engine.InMemoryMonotonicClock(),
         history = ClipHistory(capacity = 10, storage = MemHistoryStorage()),

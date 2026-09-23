@@ -25,15 +25,17 @@ import java.util.concurrent.CopyOnWriteArrayList
  * - engine broadcasts fan out to every attached [PeerConnection]; a dead channel only
  *   costs that peer, never the others;
  * - content already on the clipboard at boot is never re-synced;
- * - untrusted connections feed the engine, which refuses them (plan §9: "unpaired, not error").
+ * - connections are authenticated by a mutual certificate exchange: a device that cannot
+ *   prove a trusted fingerprint is refused at the handshake, before any event is read
+ *   (plan §4 "never trust by network membership"; §9 "unpaired, not an error").
  *
  * Threading note: the engine is not internally synchronized — one poll thread plus one
  * reader thread per connection is the intended shape; cross-thread history access is
  * safe in that single-writer-per-source regime.
  */
 class SyncDaemon(
-    identity: LocalIdentity,
-    trustStore: TrustStore,
+    private val identity: LocalIdentity,
+    private val trustStore: TrustStore,
     clock: MonotonicClock,
     history: ClipHistory,
     private val clipboard: ClipboardAdapter,
@@ -101,13 +103,20 @@ class SyncDaemon(
         return true
     }
 
-    /** Dial [peer] at [host]:[port] and wire inbound events into the engine. */
-    fun connectTo(host: String, port: Int, peer: TrustedPeer): PeerConnection =
-        attach(PeerConnection.dial(host, port, peer) { engine.onPeerMessage(peer, it) })
+    /**
+     * Dial a peer and authenticate it: both sides exchange certificates and the peer is
+     * resolved from the trust store by fingerprint, so only a paired device can talk.
+     */
+    fun connectTo(host: String, port: Int): PeerConnection =
+        attach(PeerConnection.dial(host, port, identity, trustStore) { peer, event ->
+            engine.onPeerMessage(peer, event)
+        })
 
-    /** Block until a peer connects on [serverSocket], then wire it in as [peer]. Run on a dedicated thread. */
-    fun acceptOn(serverSocket: ServerSocket, peer: TrustedPeer): PeerConnection =
-        attach(PeerConnection.accept(serverSocket, peer) { engine.onPeerMessage(peer, it) })
+    /** Block until a peer connects on [serverSocket], then authenticate it. Run on a dedicated thread. */
+    fun acceptOn(serverSocket: ServerSocket): PeerConnection =
+        attach(PeerConnection.accept(serverSocket, identity, trustStore) { peer, event ->
+            engine.onPeerMessage(peer, event)
+        })
 
     private fun attach(connection: PeerConnection): PeerConnection {
         check(!closed) { "daemon is closed" }

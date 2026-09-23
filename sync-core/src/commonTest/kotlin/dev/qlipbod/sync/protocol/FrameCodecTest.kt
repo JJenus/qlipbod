@@ -83,4 +83,24 @@ class FrameCodecTest {
             decoder.push(ByteArray(FrameCodec.DEFAULT_MAX_FRAME_BYTES + 8))
         }
     }
+
+    @Test
+    fun `raw byte bodies frame with the same length prefix`() {
+        val body = ByteArray(700) { (it % 251).toByte() }
+        val frame = FrameCodec.encodeFrameBytes(body)
+
+        val length = ((frame[0].toInt() and 0xff) shl 24) or
+            ((frame[1].toInt() and 0xff) shl 16) or
+            ((frame[2].toInt() and 0xff) shl 8) or
+            (frame[3].toInt() and 0xff)
+        assertEquals(body.size, length)
+        assertEquals(body.toList(), frame.copyOfRange(4, frame.size).toList())
+    }
+
+    @Test
+    fun `oversized raw byte body is rejected`() {
+        assertFailsWith<IllegalArgumentException> {
+            FrameCodec.encodeFrameBytes(ByteArray(FrameCodec.DEFAULT_MAX_FRAME_BYTES + 1))
+        }
+    }
 }

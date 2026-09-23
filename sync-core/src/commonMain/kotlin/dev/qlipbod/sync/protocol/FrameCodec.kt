@@ -20,8 +20,13 @@ object FrameCodec {
         ignoreUnknownKeys = true
     }
 
-    fun encodeFrame(event: SyncEvent): ByteArray {
-        val body = encode(event)
+    fun encodeFrame(event: SyncEvent): ByteArray = encodeFrameBytes(encode(event))
+
+    /**
+     * Length-prefix [body] with the same 4-byte big-endian header used for event frames,
+     * so handshake/pairing bytes can share the framing (plan §11.5).
+     */
+    fun encodeFrameBytes(body: ByteArray): ByteArray {
         require(body.size <= DEFAULT_MAX_FRAME_BYTES) {
             "frame of ${body.size} bytes exceeds the $DEFAULT_MAX_FRAME_BYTES limit"
         }

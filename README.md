@@ -12,9 +12,9 @@ this repo is the implementation of **v1 (text-only sync)**.
 | Toolchain & scaffold | ✅ Gradle 9.7.1 wrapper + Kotlin Multiplatform build |
 | `sync-core` commonMain (JVM target) | ✅ implemented |
 | `sync-core` jvmMain (identity, JSON stores, TCP transport) | ✅ implemented |
-| Core tests (`:sync-core:jvmTest`) | ✅ **49 / 49 green** (TDD red → green) |
+| Core tests (`:sync-core:jvmTest`) | ✅ **56 / 56 green** (TDD red → green) |
 | `linux-app` daemon clipboard plane | ✅ `SyncDaemon` + `ClipboardAdapter` (`xclip`), 4 / 4 green (2 `xclip` tests environment-gated) |
-| `linux-app` transport wiring | ✅ `PeerConnection` — real loopback TCP end to end, both directions, no loops, untrusted refused — 2 / 2 green |
+| `linux-app` transport wiring | ✅ fingerprint-verified handshake — mutual cert exchange resolves the peer from the trust store; unpaired devices refused before any clip flows — 3 / 3 green |
 | `android-app` shell | ⬜ documented future module, not yet materialized |
 | Discovery (mDNS/Avahi), pairing transport, CLI/`systemd` packaging | ⬜ next slices |
 
@@ -48,8 +48,9 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 
 - `sync-core` — all protocol, trust, history, pairing, and engine logic. Written once,
   runs identically on both platforms.
-- `linux-app` — the Linux daemon: clipboard hook, daemon wiring, and (next) pairing
-  transport, TCP server/accept, and mDNS/discovery, then packaged as a systemd user service.
+- `linux-app` — the Linux daemon: clipboard hook, daemon wiring, TCP dial/accept with the
+  fingerprint-verified handshake; next: pairing transport, mDNS/discovery, and packaging
+  as a systemd user service.
 - `android-app` — thin platform shell (clipboard service, PIN/QR UX), designed to slot
   in alongside `sync-core` without restructuring.
 
@@ -62,9 +63,9 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 | **Trust** | `trust/` | `TrustStore` keyed by fingerprint; add/remove/replace; persisted via `TrustStorage` (`JsonTrustStorage` on JVM). |
 | **History** | `history/` | Bounded FIFO `ClipHistory`, capacity **50**, deduped by `(origin, sequence)`, conflict *loser* retained, persisted via `HistoryStorage`. |
 | **Pairing** | `pairing/` | One-time PIN exchange HELLO → ACCEPT → CONFIRM; every message MAC'd over all fields with the PIN (MITM key injection fails the exchange); replay & tamper attacks tested. |
-| **Protocol** | `protocol/` | `SyncEvent`, `FrameCodec` (4-byte big-endian length prefix, 1 MB cap, strict framing). |
+| **Protocol** | `protocol/` | `SyncEvent`, `FrameCodec` (4-byte big-endian length prefix, 1 MB cap, strict framing, raw-byte framing for handshakes), plus the mutual certificate handshake: `HandshakeHello`, fingerprint resolution against the trust store, typed refusal of unpaired/malformed peers. |
 | **Engine** | `engine/` | `SyncEngine`: monotonic per-device sequences (never wall-clock); sensitive clips never broadcast/stored; loop prevention via origin tagging + `fromNetwork` skip; LWW conflict resolution; untrusted peers rejected at the message layer. |
-| **Transport** | `transport/` | `MessageChannel` interface; JVM `TcpMessageChannel` with length-prefixed frames over a socket. |
+| **Transport** | `transport/` | `MessageChannel` interface; JVM `TcpMessageChannel` with length-prefixed frames over a socket (incl. `attach` for post-handshake sockets); JVM `readHelloFrame` glue for the handshake. |
 
 ## Design decisions (from the plan)
 
@@ -82,28 +83,32 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 - **Conflict resolution is deterministic LWW** by total order key `(origin, sequence)`; the
   losing clip is still recorded so nothing is silently lost.
 
-## Test surface (49 core + 8 daemon)
+## Test surface (56 core + 9 daemon)
 
 - `CryptoTest` — FIPS 180-4 + RFC 4231 known vectors, hex round-trips and rejection.
 - `ClipHistoryTest` — FIFO bound, dedup, newest-first ordering, storage round trip.
 - `TrustStoreTest` — trust lifecycle + malformed-fingerprint rejection.
 - `PairingTest` — happy path, forged MAC, replayed HELLO, finished-session refusal.
 - `FrameCodecTest` — framing edge cases (zero/negative/huge lengths, truncation, partial
-  accumulation).
+  accumulation, raw-byte framing, oversized rejection).
+- `HandshakeTest` — cert round trip through a Hello frame, fingerprint resolution to the
+  exact trusted peer, unpaired-key and malformed-hello refusal.
 - `EngineTest` — monotonic sequences, sensitive clips, no-rebroadcast, echo/stale/untrusted
   handling, deterministic conflict convergence, bidirectional no-loop sync.
 - `GeneratedIdentityTest` (JVM) — BouncyCastle cert generation, fingerprint derivation.
 - `JsonStoresTest` (JVM) — persistence round trips on disk.
-- `TcpMessageChannelTest` (JVM) — real sockets, frame integrity end to end.
+- `TcpMessageChannelTest` (JVM) — real sockets, frame integrity end to end, `attach` on a
+  pre-connected socket.
 
-### Linux daemon (8 tests in `:linux-app:test`)
+### Linux daemon (9 tests in `:linux-app:test`)
 
 - `SyncDaemonTest` — poll surfaces a user copy exactly once; boot clipboard is never
   re-synced; network-applied clips are written to the clipboard and their OS echo is
   suppressed (no rebroadcast); clipboard read failures degrade to "no change".
-- `SyncDaemonStreamTest` — real loopback TCP end to end: copies sync both ways with
-  exactly one broadcast per device (no loops), and a connection declared as an untrusted
-  peer is refused at the message layer ("unpaired, not an error").
+- `SyncDaemonStreamTest` — real loopback TCP with the mutual certificate handshake:
+  copies sync both ways with exactly one broadcast per device (no loops); an unpaired
+  device is refused *at the handshake* before any clip can apply; a peer that closes
+  mid-handshake surfaces a typed handshake error, not a crash.
 - `XClipClipboardTest` — real X11 CLIPBOARD round trips via `xclip`; skipped when xclip
   or an X server is unavailable (headless/environment-gated).
 
@@ -111,11 +116,10 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 
 1. **Pairing + discovery skeleton (plan phase 1)** — UDP pairing-message transport on top
    of `PairingSession`, then mDNS/DNS-SD discovery (`_clipsync._tcp`) with a manual
-   "add by IP" fallback (the current `PeerConnection` takes the declared-peer shortcut,
-   plan §9).
-2. **Authenticated data transport** — replace the declared-peer shortcut with a
-   fingerprint-verified handshake (exchanging `GeneratedIdentity` certificates, pinning
-   the presented fingerprint against the trust store before events flow), then mTLS per
-   plan §6.
+   "add by IP" fallback (manual pairing already works end to end: trust a fingerprint,
+   dial the address, and the handshake resolves the peer — plan §9).
+2. **Encrypted data transport (plan §6)** — the handshake now *verifies* identity on the
+   wire, but clip bytes are still plaintext. Next: wrap the verified channel in TLS
+   (mTLS per plan §6) so only the two paired devices can read what flows.
 3. **CLI + packaging** — `linux-app` entry point, systemd `--user` service (plan §8).
 4. Materialize `android-app` (Android target in `sync-core`, clipboard service, PIN/QR screen).

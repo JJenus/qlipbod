@@ -72,5 +72,9 @@ class TcpMessageChannel private constructor(
 
         fun connect(host: String, port: Int, receiver: (SyncEvent) -> Unit = {}): TcpMessageChannel =
             TcpMessageChannel(Socket(host, port), receiver)
+
+        /** Wrap an already-connected socket — used after a successful handshake. */
+        fun attach(socket: Socket, receiver: (SyncEvent) -> Unit): TcpMessageChannel =
+            TcpMessageChannel(socket, receiver)
     }
 }

@@ -79,4 +79,34 @@ class TcpMessageChannelTest {
             server.close()
         }
     }
+
+    @Test
+    fun `attach wraps an already-connected socket`() {
+        val server = ServerSocket(0)
+        val received = mutableListOf<SyncEvent>()
+        val serverThread = Thread {
+            val socket = server.accept()
+            val channel = TcpMessageChannel.attach(socket) { received.add(it) }
+            try {
+                Thread.sleep(1000)
+            } finally {
+                channel.close()
+            }
+        }
+        serverThread.isDaemon = true
+        serverThread.start()
+
+        val client = TcpMessageChannel.connect("127.0.0.1", server.localPort)
+        try {
+            client.send(event(1, "via-attach"))
+            val deadline = System.currentTimeMillis() + 5000
+            while (received.isEmpty() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20)
+            }
+            assertEquals(listOf("via-attach"), received.map { it.payload })
+        } finally {
+            client.close()
+            server.close()
+        }
+    }
 }
