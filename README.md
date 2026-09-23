@@ -12,12 +12,13 @@ this repo is the implementation of **v1 (text-only sync)**.
 | Toolchain & scaffold | ✅ Gradle 9.7.1 wrapper + Kotlin Multiplatform build |
 | `sync-core` commonMain (JVM target) | ✅ implemented |
 | `sync-core` jvmMain (identity, JSON stores, TCP transport) | ✅ implemented |
-| Core tests (`:sync-core:jvmTest`) | ✅ **60 / 60 green** (TDD red → green) |
+| Core tests (`:sync-core:jvmTest`) | ✅ **66 / 66 green** (TDD red → green) |
 | `linux-app` daemon clipboard plane | ✅ `SyncDaemon` + `ClipboardAdapter` (`xclip`), 4 / 4 green (2 `xclip` tests environment-gated) |
 | `linux-app` transport wiring | ✅ fingerprint-verified handshake — mutual cert exchange resolves the peer from the trust store; unpaired devices refused before any clip flows — 3 / 3 green |
 | Pairing transport (TCP, PIN) | ✅ `PairingExchange` driver + framed `PairingTransport` (initiator/responder) pair over loopback TCP and seed the trust stores; full pair → trust → sync flow green — 3 new tests |
+| Discovery (mDNS/DNS-SD `_clipsync._tcp`) | ✅ `ClipboardService` + `DiscoveryService` contract, JmDNS adapter (advertise/browse, TXT label + fingerprint), `classifyDiscovery` badge logic, and plan §5 `AutoConnect` — 5 classifier tests + gated mDNS round trip + 3 flow tests |
 | `android-app` shell | ⬜ documented future module, not yet materialized |
-| Discovery (mDNS/Avahi), CLI/`systemd` packaging | ⬜ next slices |
+| CLI + `systemd --user` packaging | ⬜ next slice (`linux-app` entry point, manual "add by IP" flag per plan §9) |
 
 ## Quick start
 
@@ -32,15 +33,16 @@ this repo is the implementation of **v1 (text-only sync)**.
 ```
 clipboard-sync-plan.md      # authoritative design doc (trust, protocol, conflict, edge cases)
 settings.gradle.kts         # includes :sync-core, :linux-app; future :android-app
-sync-core/                  # KMP module — protocol, trust, history, pairing, engine
+sync-core/                  # KMP module — protocol, trust, history, pairing, discovery, engine
   src/commonMain/           # code shared by Linux and Android
   src/commonTest/           # multiplatform tests (the behavior contract)
-  src/jvmMain/              # JVM-only implementations (crypto identity, JSON, TCP)
+  src/jvmMain/              # JVM-only implementations (crypto identity, JSON, TCP, JmDNS mDNS)
   src/jvmTest/              # JVM integration tests
 linux-app/                  # JVM application — daemon wiring, clipboard, transport
   src/main/kotlin/dev/qlipbod/app/linux/
     clipboard/              # ClipboardAdapter + XClipClipboard (X11 CLIPBOARD via xclip)
     daemon/                 # SyncDaemon: engine ⇄ clipboard ⇄ connections composition root
+    discovery/              # AutoConnect: plan §5 auto-connect over the verified handshake
     transport/              # PeerConnection: dial/accept over sync-core TcpMessageChannel
   src/test/kotlin/          # daemon contract + loopback stream tests + env-gated xclip round trips
 ```
@@ -50,8 +52,8 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 - `sync-core` — all protocol, trust, history, pairing, and engine logic. Written once,
   runs identically on both platforms.
 - `linux-app` — the Linux daemon: clipboard hook, daemon wiring, TCP dial/accept with the
-  fingerprint-verified handshake, PIN pairing over TCP; next: mDNS/discovery and packaging
-  as a systemd user service.
+  fingerprint-verified handshake, PIN pairing over TCP, and mDNS discovery with plan §5
+  auto-connect; next: packaging as a systemd user service.
 - `android-app` — thin platform shell (clipboard service, PIN/QR UX), designed to slot
   in alongside `sync-core` without restructuring.
 
@@ -66,6 +68,7 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 | **Pairing** | `pairing/` | One-time PIN exchange HELLO → ACCEPT → CONFIRM; every message MAC'd over all fields with the PIN (MITM key injection fails the exchange); replay & tamper attacks tested. JVM `PairingTransport` runs the exchange over the same length-prefixed framing as the data channel (short-lived connection, initiator/responder + `PairingFailedException`). |
 | **Protocol** | `protocol/` | `SyncEvent`, `FrameCodec` (4-byte big-endian length prefix, 1 MB cap, strict framing, raw-byte framing for handshakes), plus the mutual certificate handshake: `HandshakeHello`, fingerprint resolution against the trust store, typed refusal of unpaired/malformed peers. A shared JVM `readFrameBody` (with `StreamFrameException`) serves both the handshake and the pairing exchange so one framing definition lives everywhere. |
 | **Engine** | `engine/` | `SyncEngine`: monotonic per-device sequences (never wall-clock); sensitive clips never broadcast/stored; loop prevention via origin tagging + `fromNetwork` skip; LWW conflict resolution; untrusted peers rejected at the message layer. |
+| **Discovery** | `discovery/` | `ClipboardService` (service type `_clipsync._tcp`, TXT keys) + the `DiscoveryService` contract (advertise/browse/listen, restartable on network change); JVM `JmDnsDiscovery` advertises label/version/fingerprint in TXT and browses + dedupes appearances. `classifyDiscovery` badges a found device **paired** only when its advertised fingerprint resolves in the trust store — presence alone is never trust (§3-§5). `AutoConnect` (linux-app) then dials a paired device only through the fingerprint-verified handshake. |
 | **Transport** | `transport/` | `MessageChannel` interface; JVM `TcpMessageChannel` with length-prefixed frames over a socket (incl. `attach` for post-handshake sockets); JVM `readHelloFrame` glue for the handshake. |
 
 ## Design decisions (from the plan)
@@ -84,7 +87,7 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 - **Conflict resolution is deterministic LWW** by total order key `(origin, sequence)`; the
   losing clip is still recorded so nothing is silently lost.
 
-## Test surface (60 core + 10 daemon)
+## Test surface (66 core + 13 daemon)
 
 - `CryptoTest` — FIPS 180-4 + RFC 4231 known vectors, hex round-trips and rejection.
 - `ClipHistoryTest` — FIFO bound, dedup, newest-first ordering, storage round trip.
@@ -106,8 +109,15 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 - `JsonStoresTest` (JVM) — persistence round trips on disk.
 - `TcpMessageChannelTest` (JVM) — real sockets, frame integrity end to end, `attach` on a
   pre-connected socket.
+- `DiscoveryClassifierTest` — plan §4/§5 badge logic: a device whose advertised
+  fingerprint is in the trust store is **paired**; unknown, missing, or malformed
+  fingerprints are **unpaired** (a hint only — the handshake stays the verdict).
+- `JmDnsDiscoveryTest` (JVM, multicast-gated) — a real mDNS round trip: one discovery
+  advertises `_clipsync._tcp`, another browses and resolves label, fingerprint, port, and
+  protocol version from the TXT records; skips on hosts without multicast (like the
+  `xclip` gate).
 
-### Linux daemon (10 tests in `:linux-app:test`, 2 environment-gated)
+### Linux daemon (13 tests in `:linux-app:test`, 2 environment-gated)
 
 - `SyncDaemonTest` — poll surfaces a user copy exactly once; boot clipboard is never
   re-synced; network-applied clips are written to the clipboard and their OS echo is
@@ -120,18 +130,18 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
   with a shared PIN, persist each side's confirmed fingerprint into its trust store, then
   the ordinary verified data handshake connects them and clips flow both ways with no
   loops.
+- `DiscoverConnectFlowTest` — plan §5 wiring through a controllable discovery: a
+  discovered **paired** device is dialed and the verified handshake syncs clips; an
+  **unpaired** device is never dialed; a *lying advertisement* (a trusted fingerprint
+  served by an untrusted certificate) is dialed once but refused by the handshake, then
+  re-classified unpaired — no clip ever flows.
 - `XClipClipboardTest` — real X11 CLIPBOARD round trips via `xclip`; skipped when xclip
   or an X server is unavailable (headless/environment-gated).
 
 ## Next steps
 
-1. **Discovery (mDNS/DNS-SD) — the last plan-phase-1 piece** — advertise and browse
-   `_clipsync._tcp` (Avahi/mDNS) so paired devices find each other without typing IPs,
-   with a manual "add by IP" fallback (pairing and manual connect already work end to
-   end: pair once over TCP, trust the confirmed fingerprint, dial the address, and the
-   handshake resolves the peer — plan §9).
+1. **CLI + packaging (plan §8, §9)** — a `linux-app` entry point (daemon `start`, `--pair <host> <pin>`, and the manual "add by IP" `--connect <host>` fallback so discovery is never a prerequisite), then a `systemd --user` service so the daemon survives reboots and restarts discovery on network changes.
 2. **Encrypted data transport (plan §6)** — the handshake now *verifies* identity on the
-   wire, but clip bytes are still plaintext. Next: wrap the verified channel in TLS
-   (mTLS per plan §6) so only the two paired devices can read what flows.
-3. **CLI + packaging** — `linux-app` entry point, systemd `--user` service (plan §8).
-4. Materialize `android-app` (Android target in `sync-core`, clipboard service, PIN/QR screen).
+   wire, but clip bytes are still plaintext. mTLS over the verified channel is deferred
+   for v1 by choice; revisit with the verified session as the key-exchange backbone.
+3. Materialize `android-app` (Android target in `sync-core`, clipboard service, PIN/QR screen).

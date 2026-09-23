@@ -18,6 +18,7 @@ kotlin {
         jvmMain.dependencies {
             implementation("org.bouncycastle:bcprov-jdk18on:1.86")
             implementation("org.bouncycastle:bcpkix-jdk18on:1.86")
+            implementation("org.jmdns:jmdns:3.6.3")
         }
         jvmTest.dependencies {
             implementation(kotlin("test-junit"))

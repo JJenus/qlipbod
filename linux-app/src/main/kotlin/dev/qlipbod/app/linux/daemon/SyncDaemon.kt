@@ -35,7 +35,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 class SyncDaemon(
     private val identity: LocalIdentity,
-    private val trustStore: TrustStore,
+    val trustStore: TrustStore,
     clock: MonotonicClock,
     history: ClipHistory,
     private val clipboard: ClipboardAdapter,
