@@ -12,34 +12,44 @@ this repo is the implementation of **v1 (text-only sync)**.
 | Toolchain & scaffold | ✅ Gradle 9.7.1 wrapper + Kotlin Multiplatform build |
 | `sync-core` commonMain (JVM target) | ✅ implemented |
 | `sync-core` jvmMain (identity, JSON stores, TCP transport) | ✅ implemented |
-| Tests (`:sync-core:jvmTest`) | ✅ **49 / 49 green** (TDD red → green) |
-| `android-app` / `linux-app` shells | ⬜ documented future modules, not yet materialized |
+| Core tests (`:sync-core:jvmTest`) | ✅ **49 / 49 green** (TDD red → green) |
+| `linux-app` daemon clipboard plane | ✅ `SyncDaemon` + `ClipboardAdapter` (`xclip`), 4 / 4 green (2 `xclip` tests environment-gated) |
+| `android-app` shell | ⬜ documented future module, not yet materialized |
+| Discovery (mDNS/Avahi), pairing transport, CLI/`systemd` packaging | ⬜ next slices |
 
 ## Quick start
 
 ```bash
-./gradlew :sync-core:jvmTest     # run the whole suite
-./gradlew build                  # assemble + test
+./gradlew :sync-core:jvmTest     # run the core suite
+./gradlew :linux-app:test        # run the daemon suite
+./gradlew build                  # assemble + test everything
 ```
 
 ## Repository layout
 
 ```
 clipboard-sync-plan.md      # authoritative design doc (trust, protocol, conflict, edge cases)
-settings.gradle.kts         # includes :sync-core; future :android-app, :linux-app
-sync-core/
-  src/commonMain/           # KMP code shared by Linux and Android
+settings.gradle.kts         # includes :sync-core, :linux-app; future :android-app
+sync-core/                  # KMP module — protocol, trust, history, pairing, engine
+  src/commonMain/           # code shared by Linux and Android
   src/commonTest/           # multiplatform tests (the behavior contract)
   src/jvmMain/              # JVM-only implementations (crypto identity, JSON, TCP)
   src/jvmTest/              # JVM integration tests
+linux-app/                  # JVM application — daemon wiring, clipboard, (transport/discovery next)
+  src/main/kotlin/dev/qlipbod/app/linux/
+    clipboard/              # ClipboardAdapter + XClipClipboard (X11 CLIPBOARD via xclip)
+    daemon/                 # SyncDaemon: engine ⇄ clipboard composition root
+  src/test/kotlin/          # daemon contract tests + env-gated xclip round trips
 ```
 
 ### Module plan
 
 - `sync-core` — all protocol, trust, history, pairing, and engine logic. Written once,
   runs identically on both platforms.
-- `android-app` / `linux-app` — thin platform shells (clipboard hooks, QR/PIN UX, daemon),
-  designed to slot in alongside `sync-core` without restructuring.
+- `linux-app` — the Linux daemon: clipboard hook, daemon wiring, and (next) pairing
+  transport, TCP server/accept, and mDNS/discovery, then packaged as a systemd user service.
+- `android-app` — thin platform shell (clipboard service, PIN/QR UX), designed to slot
+  in alongside `sync-core` without restructuring.
 
 ## What's implemented (v1)
 
@@ -84,8 +94,21 @@ sync-core/
 - `JsonStoresTest` (JVM) — persistence round trips on disk.
 - `TcpMessageChannelTest` (JVM) — real sockets, frame integrity end to end.
 
+### Linux daemon (6 tests in `:linux-app:test`)
+
+- `SyncDaemonTest` — poll surfaces a user copy exactly once; boot clipboard is never
+  re-synced; network-applied clips are written to the clipboard and their OS echo is
+  suppressed (no rebroadcast); clipboard read failures degrade to "no change".
+- `XClipClipboardTest` — real X11 CLIPBOARD round trips via `xclip`; skipped when xclip
+  or an X server is unavailable (headless/environment-gated).
+
 ## Next steps
 
-1. Materialize `linux-app` (clipboard hook via `xclip`/Wayland, pairing UI, `TcpMessageChannel` server).
-2. Materialize `android-app` (Android target in `sync-core`, clipboard service, PIN/QR screen).
-3. Auto-discovery of peers on the LAN (plan §3) — out of scope for the core tests here.
+1. **Pairing + discovery skeleton (plan phase 1)** — UDP pairing-message transport on top
+   of `PairingSession`, then mDNS/DNS-SD discovery (`_clipsync._tcp`) with a manual
+   "add by IP" fallback.
+2. **Authenticated data transport** — fingerprint-verified handshake on TCP (pinning a
+   presented certificate against the trust store before events flow), wrapping
+   `TcpMessageChannel`; mTLS per plan §6.
+3. **CLI + packaging** — `linux-app` entry point, systemd `--user` service (plan §8).
+4. Materialize `android-app` (Android target in `sync-core`, clipboard service, PIN/QR screen).

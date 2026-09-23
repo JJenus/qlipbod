@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 rootProject.name = "qlipbod"
 
 include(":sync-core")
+include(":linux-app")
