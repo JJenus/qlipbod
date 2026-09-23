@@ -1,6 +1,7 @@
 package dev.qlipbod.app.linux.daemon
 
 import dev.qlipbod.app.linux.clipboard.ClipboardAdapter
+import dev.qlipbod.app.linux.transport.PeerConnection
 import dev.qlipbod.sync.engine.EngineListener
 import dev.qlipbod.sync.engine.EventSink
 import dev.qlipbod.sync.engine.MonotonicClock
@@ -8,52 +9,77 @@ import dev.qlipbod.sync.engine.SyncEngine
 import dev.qlipbod.sync.history.ClipHistory
 import dev.qlipbod.sync.identity.LocalIdentity
 import dev.qlipbod.sync.protocol.SyncEvent
+import dev.qlipbod.sync.trust.TrustedPeer
 import dev.qlipbod.sync.trust.TrustStore
+import java.net.ServerSocket
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Composition root of the Linux daemon's clipboard plane (plan §8, §9, §11.1).
+ * Composition root of the Linux daemon (plan §8, §9, §11.1). Owns the wiring between
+ * the [SyncEngine], the [ClipboardAdapter], and [PeerConnection]s:
  *
- * Owns the [SyncEngine] ↔ [ClipboardAdapter] wiring:
- * - a clipboard change surfaced by [poll] is treated as a *user copy* and fed to the
- *   engine (`onLocalClipChanged`) — broadcast once, monotonically sequenced;
+ * - a clipboard change surfaced by [poll] is a *user copy* → engine `onLocalClipChanged` —
+ *   broadcast once, monotonically sequenced;
  * - an engine `onClipApplied` is written to the adapter, and the resulting OS-level
- *   clipboard echo is remembered so the next poll suppresses it (host-side loop
- *   prevention, mirroring the engine's `fromNetwork` flag);
- * - content already on the clipboard at boot is never re-synced.
+ *   clipboard echo is suppressed by the next poll (host-side loop prevention);
+ * - engine broadcasts fan out to every attached [PeerConnection]; a dead channel only
+ *   costs that peer, never the others;
+ * - content already on the clipboard at boot is never re-synced;
+ * - untrusted connections feed the engine, which refuses them (plan §9: "unpaired, not error").
  *
- * Transport, discovery, and the pairing UI are composed around this class in later
- * slices; nothing here is platform-specific beyond [ClipboardAdapter].
+ * Threading note: the engine is not internally synchronized — one poll thread plus one
+ * reader thread per connection is the intended shape; cross-thread history access is
+ * safe in that single-writer-per-source regime.
  */
 class SyncDaemon(
     identity: LocalIdentity,
     trustStore: TrustStore,
     clock: MonotonicClock,
     history: ClipHistory,
-    eventSink: EventSink,
     private val clipboard: ClipboardAdapter,
 ) : AutoCloseable {
 
-    /** The engine this daemon drives; exposed for transport wiring and observability. */
+    private val connections = CopyOnWriteArrayList<PeerConnection>()
+
+    /** The engine this daemon drives, exposed for observability and future pairing flows. */
     val engine = SyncEngine(
         identity = identity,
         trustStore = trustStore,
         clock = clock,
         history = history,
-        eventSink = eventSink,
+        eventSink = EventSink { event ->
+            connections.forEach { runCatching { it.send(event) } }
+        },
         listener = object : EngineListener {
             override fun onClipApplied(event: SyncEvent) {
                 lastWritten = event.payload
                 clipboard.write(event.payload)
             }
+
+            override fun onBroadcast(event: SyncEvent) {
+                broadcastLog += event
+            }
+
+            override fun onRejected(peer: TrustedPeer, reason: String) {
+                rejectedLog += peer to reason
+            }
         },
     )
+
+    /** Every broadcast the engine handed to the transport, in order. */
+    val broadcastLog = mutableListOf<SyncEvent>()
+
+    /** Every message-layer refusal, as (peer as declared on the connection, reason). */
+    val rejectedLog = mutableListOf<Pair<TrustedPeer, String>>()
 
     /** Clipboard contents the daemon last accounted for (boot state or last successful poll). */
     var lastSeen: String? = null
         private set
 
-    /** Our own most recent network-applied write, used to suppress the echo. */
+    /** Our own most recent network-applied write, used to suppress the OS echo. */
     private var lastWritten: String? = null
+
+    private var closed = false
 
     init {
         // Do not re-sync whatever is in the clipboard when the daemon starts.
@@ -75,8 +101,24 @@ class SyncDaemon(
         return true
     }
 
+    /** Dial [peer] at [host]:[port] and wire inbound events into the engine. */
+    fun connectTo(host: String, port: Int, peer: TrustedPeer): PeerConnection =
+        attach(PeerConnection.dial(host, port, peer) { engine.onPeerMessage(peer, it) })
+
+    /** Block until a peer connects on [serverSocket], then wire it in as [peer]. Run on a dedicated thread. */
+    fun acceptOn(serverSocket: ServerSocket, peer: TrustedPeer): PeerConnection =
+        attach(PeerConnection.accept(serverSocket, peer) { engine.onPeerMessage(peer, it) })
+
+    private fun attach(connection: PeerConnection): PeerConnection {
+        check(!closed) { "daemon is closed" }
+        connections += connection
+        return connection
+    }
+
     override fun close() {
-        // Transports that attach in later slices register their own teardown here.
+        closed = true
+        connections.forEach { runCatching { it.close() } }
+        connections.clear()
     }
 
     private fun readClipboard(): String? = runCatching { clipboard.read() }.getOrNull()

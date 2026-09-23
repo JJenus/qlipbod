@@ -14,6 +14,7 @@ this repo is the implementation of **v1 (text-only sync)**.
 | `sync-core` jvmMain (identity, JSON stores, TCP transport) | ✅ implemented |
 | Core tests (`:sync-core:jvmTest`) | ✅ **49 / 49 green** (TDD red → green) |
 | `linux-app` daemon clipboard plane | ✅ `SyncDaemon` + `ClipboardAdapter` (`xclip`), 4 / 4 green (2 `xclip` tests environment-gated) |
+| `linux-app` transport wiring | ✅ `PeerConnection` — real loopback TCP end to end, both directions, no loops, untrusted refused — 2 / 2 green |
 | `android-app` shell | ⬜ documented future module, not yet materialized |
 | Discovery (mDNS/Avahi), pairing transport, CLI/`systemd` packaging | ⬜ next slices |
 
@@ -35,11 +36,12 @@ sync-core/                  # KMP module — protocol, trust, history, pairing, 
   src/commonTest/           # multiplatform tests (the behavior contract)
   src/jvmMain/              # JVM-only implementations (crypto identity, JSON, TCP)
   src/jvmTest/              # JVM integration tests
-linux-app/                  # JVM application — daemon wiring, clipboard, (transport/discovery next)
+linux-app/                  # JVM application — daemon wiring, clipboard, transport
   src/main/kotlin/dev/qlipbod/app/linux/
     clipboard/              # ClipboardAdapter + XClipClipboard (X11 CLIPBOARD via xclip)
-    daemon/                 # SyncDaemon: engine ⇄ clipboard composition root
-  src/test/kotlin/          # daemon contract tests + env-gated xclip round trips
+    daemon/                 # SyncDaemon: engine ⇄ clipboard ⇄ connections composition root
+    transport/              # PeerConnection: dial/accept over sync-core TcpMessageChannel
+  src/test/kotlin/          # daemon contract + loopback stream tests + env-gated xclip round trips
 ```
 
 ### Module plan
@@ -80,7 +82,7 @@ linux-app/                  # JVM application — daemon wiring, clipboard, (tra
 - **Conflict resolution is deterministic LWW** by total order key `(origin, sequence)`; the
   losing clip is still recorded so nothing is silently lost.
 
-## Test surface (49 tests)
+## Test surface (49 core + 8 daemon)
 
 - `CryptoTest` — FIPS 180-4 + RFC 4231 known vectors, hex round-trips and rejection.
 - `ClipHistoryTest` — FIFO bound, dedup, newest-first ordering, storage round trip.
@@ -94,11 +96,14 @@ linux-app/                  # JVM application — daemon wiring, clipboard, (tra
 - `JsonStoresTest` (JVM) — persistence round trips on disk.
 - `TcpMessageChannelTest` (JVM) — real sockets, frame integrity end to end.
 
-### Linux daemon (6 tests in `:linux-app:test`)
+### Linux daemon (8 tests in `:linux-app:test`)
 
 - `SyncDaemonTest` — poll surfaces a user copy exactly once; boot clipboard is never
   re-synced; network-applied clips are written to the clipboard and their OS echo is
   suppressed (no rebroadcast); clipboard read failures degrade to "no change".
+- `SyncDaemonStreamTest` — real loopback TCP end to end: copies sync both ways with
+  exactly one broadcast per device (no loops), and a connection declared as an untrusted
+  peer is refused at the message layer ("unpaired, not an error").
 - `XClipClipboardTest` — real X11 CLIPBOARD round trips via `xclip`; skipped when xclip
   or an X server is unavailable (headless/environment-gated).
 
@@ -106,9 +111,11 @@ linux-app/                  # JVM application — daemon wiring, clipboard, (tra
 
 1. **Pairing + discovery skeleton (plan phase 1)** — UDP pairing-message transport on top
    of `PairingSession`, then mDNS/DNS-SD discovery (`_clipsync._tcp`) with a manual
-   "add by IP" fallback.
-2. **Authenticated data transport** — fingerprint-verified handshake on TCP (pinning a
-   presented certificate against the trust store before events flow), wrapping
-   `TcpMessageChannel`; mTLS per plan §6.
+   "add by IP" fallback (the current `PeerConnection` takes the declared-peer shortcut,
+   plan §9).
+2. **Authenticated data transport** — replace the declared-peer shortcut with a
+   fingerprint-verified handshake (exchanging `GeneratedIdentity` certificates, pinning
+   the presented fingerprint against the trust store before events flow), then mTLS per
+   plan §6.
 3. **CLI + packaging** — `linux-app` entry point, systemd `--user` service (plan §8).
 4. Materialize `android-app` (Android target in `sync-core`, clipboard service, PIN/QR screen).
