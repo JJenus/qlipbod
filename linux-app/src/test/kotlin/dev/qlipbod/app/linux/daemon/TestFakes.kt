@@ -3,6 +3,9 @@ package dev.qlipbod.app.linux.daemon
 import dev.qlipbod.app.linux.clipboard.ClipboardAdapter
 import dev.qlipbod.sync.crypto.Fingerprint
 import dev.qlipbod.sync.crypto.Sha256
+import dev.qlipbod.sync.discovery.DiscoveredDevice
+import dev.qlipbod.sync.discovery.DiscoveryListener
+import dev.qlipbod.sync.discovery.DiscoveryService
 import dev.qlipbod.sync.history.ClipHistory
 import dev.qlipbod.sync.history.HistoryStorage
 import dev.qlipbod.sync.identity.DeviceId
@@ -13,6 +16,28 @@ import dev.qlipbod.sync.trust.TrustStorage
 import dev.qlipbod.sync.trust.TrustStore
 import dev.qlipbod.sync.trust.TrustedPeer
 import java.io.IOException
+
+/**
+ * A controllable [DiscoveryService] for tests: [find] pushes a device appearance at the
+ * registered listener exactly like a real mDNS browse would.
+ */
+internal class FakeDiscovery : DiscoveryService {
+    private var listener: DiscoveryListener? = null
+
+    /** True once [browse] has registered a listener — awaits before [find] in tests. */
+    @Volatile
+    var browsing = false
+        private set
+
+    override fun advertise(identity: LocalIdentity, port: Int) = Unit
+    override fun browse(listener: DiscoveryListener) {
+        this.listener = listener
+        browsing = true
+    }
+
+    override fun close() { listener = null; browsing = false }
+    fun find(device: DiscoveredDevice) = listener?.onDeviceFound(device)
+}
 
 /** Deterministic clipboard for tests: value + write counter. */
 internal class FakeClipboard(var value: String? = null) : ClipboardAdapter {

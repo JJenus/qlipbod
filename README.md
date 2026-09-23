@@ -12,13 +12,13 @@ this repo is the implementation of **v1 (text-only sync)**.
 | Toolchain & scaffold | ✅ Gradle 9.7.1 wrapper + Kotlin Multiplatform build |
 | `sync-core` commonMain (JVM target) | ✅ implemented |
 | `sync-core` jvmMain (identity, JSON stores, TCP transport) | ✅ implemented |
-| Core tests (`:sync-core:jvmTest`) | ✅ **66 / 66 green** (TDD red → green) |
+| Core tests (`:sync-core:jvmTest`) | ✅ **76 / 76 green** (TDD red → green) |
 | `linux-app` daemon clipboard plane | ✅ `SyncDaemon` + `ClipboardAdapter` (`xclip`), 4 / 4 green (2 `xclip` tests environment-gated) |
 | `linux-app` transport wiring | ✅ fingerprint-verified handshake — mutual cert exchange resolves the peer from the trust store; unpaired devices refused before any clip flows — 3 / 3 green |
 | Pairing transport (TCP, PIN) | ✅ `PairingExchange` driver + framed `PairingTransport` (initiator/responder) pair over loopback TCP and seed the trust stores; full pair → trust → sync flow green — 3 new tests |
 | Discovery (mDNS/DNS-SD `_clipsync._tcp`) | ✅ `ClipboardService` + `DiscoveryService` contract, JmDNS adapter (advertise/browse, TXT label + fingerprint), `classifyDiscovery` badge logic, and plan §5 `AutoConnect` — 5 classifier tests + gated mDNS round trip + 3 flow tests |
+| CLI + `systemd --user` packaging | ✅ `qlipbod start|pair|help` (plan §8) through `DaemonRuntime` with `--connect` manual add-by-IP (§9); persistent identity/trust/history in the data dir; systemd `--user` unit + NetworkManager restart hook docs — 24 new tests |
 | `android-app` shell | ⬜ documented future module, not yet materialized |
-| CLI + `systemd --user` packaging | ⬜ next slice (`linux-app` entry point, manual "add by IP" flag per plan §9) |
 
 ## Quick start
 
@@ -38,13 +38,15 @@ sync-core/                  # KMP module — protocol, trust, history, pairing, 
   src/commonTest/           # multiplatform tests (the behavior contract)
   src/jvmMain/              # JVM-only implementations (crypto identity, JSON, TCP, JmDNS mDNS)
   src/jvmTest/              # JVM integration tests
-linux-app/                  # JVM application — daemon wiring, clipboard, transport
+linux-app/                  # JVM application — daemon wiring, clipboard, transport, CLI
   src/main/kotlin/dev/qlipbod/app/linux/
     clipboard/              # ClipboardAdapter + XClipClipboard (X11 CLIPBOARD via xclip)
-    daemon/                 # SyncDaemon: engine ⇄ clipboard ⇄ connections composition root
+    cli/                    # qlipbod CLI: parser, QlipbodCli handlers, QlipbodState, Main
+    daemon/                 # SyncDaemon + DaemonRuntime: engine ⇄ clipboard ⇄ connections
     discovery/              # AutoConnect: plan §5 auto-connect over the verified handshake
     transport/              # PeerConnection: dial/accept over sync-core TcpMessageChannel
   src/test/kotlin/          # daemon contract + loopback stream tests + env-gated xclip round trips
+  packaging/                # systemd --user unit + install/network-change README
 ```
 
 ### Module plan
@@ -53,7 +55,8 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
   runs identically on both platforms.
 - `linux-app` — the Linux daemon: clipboard hook, daemon wiring, TCP dial/accept with the
   fingerprint-verified handshake, PIN pairing over TCP, and mDNS discovery with plan §5
-  auto-connect; next: packaging as a systemd user service.
+  auto-connect; the `qlipbod` CLI (`start`/`pair`/`help`) is packaged as a `systemd --user`
+  service with a NetworkManager dispatcher hook for network changes.
 - `android-app` — thin platform shell (clipboard service, PIN/QR UX), designed to slot
   in alongside `sync-core` without restructuring.
 
@@ -87,7 +90,7 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 - **Conflict resolution is deterministic LWW** by total order key `(origin, sequence)`; the
   losing clip is still recorded so nothing is silently lost.
 
-## Test surface (66 core + 13 daemon)
+## Test surface (76 core + 37 daemon)
 
 - `CryptoTest` — FIPS 180-4 + RFC 4231 known vectors, hex round-trips and rejection.
 - `ClipHistoryTest` — FIFO bound, dedup, newest-first ordering, storage round trip.
@@ -106,6 +109,13 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
 - `EngineTest` — monotonic sequences, sensitive clips, no-rebroadcast, echo/stale/untrusted
   handling, deterministic conflict convergence, bidirectional no-loop sync.
 - `GeneratedIdentityTest` (JVM) — BouncyCastle cert generation, fingerprint derivation.
+- `FileIdentityStorageTest` (JVM) — the persistent identity: a generated identity round-trips
+  through the data dir byte-identically, an existing one is reloaded unchanged, and the
+  directory is created on first use — the fingerprint-survives-restart guarantee.
+- `SystemMonotonicClockTest` (JVM) — the production clock is strictly monotonic across a
+  sequence (150 → 156 → 164…) and never regresses.
+- `QlipbodDefaultsTest` — the shared wire defaults (sync 4343 / pairing 4344) are in sync
+  with the service type and used by both the CLI and the future Android app.
 - `JsonStoresTest` (JVM) — persistence round trips on disk.
 - `TcpMessageChannelTest` (JVM) — real sockets, frame integrity end to end, `attach` on a
   pre-connected socket.
@@ -117,7 +127,7 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
   protocol version from the TXT records; skips on hosts without multicast (like the
   `xclip` gate).
 
-### Linux daemon (13 tests in `:linux-app:test`, 2 environment-gated)
+### Linux daemon (37 tests in `:linux-app:test`, 2 environment-gated)
 
 - `SyncDaemonTest` — poll surfaces a user copy exactly once; boot clipboard is never
   re-synced; network-applied clips are written to the clipboard and their OS echo is
@@ -135,13 +145,29 @@ linux-app/                  # JVM application — daemon wiring, clipboard, tran
   **unpaired** device is never dialed; a *lying advertisement* (a trusted fingerprint
   served by an untrusted certificate) is dialed once but refused by the handshake, then
   re-classified unpaired — no clip ever flows.
+- `DaemonRuntimeTest` — the long-running composition: a manual dial through the poll +
+  accept loops syncs both directions; a discovered paired device is auto-dialed; the
+  `--connect` manual add-by-IP dial connects at startup; `close()` is graceful,
+  idempotent, and leaves nothing accepting.
+- `CliParserTest` — the pure argument grammar: defaults match the wire ports, every
+  option parses, `--connect HOST` defaults to the sync port, and bad ports/values/options
+  and flags missing values become `Error`s.
+- `QlipbodCliTest` — the command surface end to end: a matching PIN pins the confirmed
+  fingerprint in the on-disk trust store and reports the peer; a mismatched PIN fails
+  and leaves the store untouched; identity and trust persist across boots; and the full
+  product journey — `pair` via the CLI, then `start` via the same data dir, then a
+  discovered device auto-connects and clips flow.
 - `XClipClipboardTest` — real X11 CLIPBOARD round trips via `xclip`; skipped when xclip
   or an X server is unavailable (headless/environment-gated).
 
 ## Next steps
 
-1. **CLI + packaging (plan §8, §9)** — a `linux-app` entry point (daemon `start`, `--pair <host> <pin>`, and the manual "add by IP" `--connect <host>` fallback so discovery is never a prerequisite), then a `systemd --user` service so the daemon survives reboots and restarts discovery on network changes.
+1. **Materialize `android-app`** — add the Android target to `sync-core`, bind
+   `NsdManager` discovery (same `_clipsync._tcp` service type and
+   `DiscoveryService` contract), a clipboard service, and the PIN pairing screen.
+   The CLI pairing flow already proves the wire protocol the app will speak.
 2. **Encrypted data transport (plan §6)** — the handshake now *verifies* identity on the
    wire, but clip bytes are still plaintext. mTLS over the verified channel is deferred
    for v1 by choice; revisit with the verified session as the key-exchange backbone.
-3. Materialize `android-app` (Android target in `sync-core`, clipboard service, PIN/QR screen).
+3. Re-base the engine's `SystemMonotonicClock` across restarts from persisted history, so
+   sequences stay strictly increasing even across reboots of one device.

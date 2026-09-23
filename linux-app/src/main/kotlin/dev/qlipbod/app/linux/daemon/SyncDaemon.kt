@@ -34,7 +34,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * safe in that single-writer-per-source regime.
  */
 class SyncDaemon(
-    private val identity: LocalIdentity,
+    /** The identity this daemon presents on every connection and advertises via discovery. */
+    val identity: LocalIdentity,
     val trustStore: TrustStore,
     clock: MonotonicClock,
     history: ClipHistory,

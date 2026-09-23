@@ -15,9 +15,9 @@ import java.util.Date
  * The fingerprint (SHA-256 of the DER bytes) is the trust anchor stored at pairing time;
  * the certificate itself rides the future mTLS handshake.
  */
-class GeneratedIdentity private constructor(
+class GeneratedIdentity internal constructor(
     override val deviceId: DeviceId,
-    private val keyPair: KeyPair,
+    internal val keyPair: KeyPair,
     override val certDer: ByteArray,
 ) : LocalIdentity {
 

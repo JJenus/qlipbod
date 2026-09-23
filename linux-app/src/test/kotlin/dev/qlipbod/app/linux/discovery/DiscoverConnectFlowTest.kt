@@ -5,11 +5,9 @@ import dev.qlipbod.app.linux.daemon.await
 import dev.qlipbod.app.linux.daemon.newWireDaemon
 import dev.qlipbod.app.linux.daemon.wireIdentity
 import dev.qlipbod.app.linux.daemon.wireTrust
+import dev.qlipbod.app.linux.daemon.FakeDiscovery
 import dev.qlipbod.sync.discovery.DiscoveredDevice
-import dev.qlipbod.sync.discovery.DiscoveryListener
-import dev.qlipbod.sync.discovery.DiscoveryService
 import dev.qlipbod.sync.discovery.DiscoveryStatus
-import dev.qlipbod.sync.identity.LocalIdentity
 import dev.qlipbod.sync.protocol.HandshakeException
 import dev.qlipbod.sync.protocol.UnverifiedPeerException
 import java.net.ServerSocket
@@ -28,15 +26,6 @@ import kotlin.test.assertTrue
  * fingerprint, untrusted certificate) is still refused at the handshake.
  */
 class DiscoverConnectFlowTest {
-
-    /** A controllable [DiscoveryService]: the test pushes device appearances. */
-    private class FakeDiscovery : DiscoveryService {
-        private var listener: DiscoveryListener? = null
-        override fun advertise(identity: LocalIdentity, port: Int) = Unit
-        override fun browse(listener: DiscoveryListener) { this.listener = listener }
-        override fun close() { listener = null }
-        fun find(device: DiscoveredDevice) = listener?.onDeviceFound(device)
-    }
 
     @Test
     fun `a discovered paired device is dialed and the verified handshake syncs clips`() {
