@@ -1,6 +1,6 @@
 package dev.qlipbod.app.linux.cli
 
-import dev.qlipbod.app.linux.clipboard.ClipboardAdapter
+import dev.qlipbod.sync.clipboard.ClipboardAdapter
 import dev.qlipbod.app.linux.daemon.FakeClipboard
 import dev.qlipbod.app.linux.daemon.FakeDiscovery
 import dev.qlipbod.app.linux.daemon.await

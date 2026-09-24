@@ -1,6 +1,7 @@
 package dev.qlipbod.app.linux.daemon
 
-import dev.qlipbod.app.linux.clipboard.ClipboardAdapter
+import dev.qlipbod.sync.clipboard.ClipboardAdapter
+import dev.qlipbod.sync.daemon.SyncDaemon
 import dev.qlipbod.sync.crypto.Fingerprint
 import dev.qlipbod.sync.crypto.Sha256
 import dev.qlipbod.sync.discovery.DiscoveredDevice

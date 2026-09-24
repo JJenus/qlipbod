@@ -1,4 +1,4 @@
-package dev.qlipbod.app.linux.transport
+package dev.qlipbod.sync.daemon
 
 import dev.qlipbod.sync.identity.LocalIdentity
 import dev.qlipbod.sync.protocol.HandshakeProtocol

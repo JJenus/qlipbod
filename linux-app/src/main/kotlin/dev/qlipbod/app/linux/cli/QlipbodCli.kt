@@ -1,8 +1,8 @@
 package dev.qlipbod.app.linux.cli
 
-import dev.qlipbod.app.linux.clipboard.ClipboardAdapter
-import dev.qlipbod.app.linux.daemon.DaemonRuntime
-import dev.qlipbod.app.linux.daemon.SyncDaemon
+import dev.qlipbod.sync.clipboard.ClipboardAdapter
+import dev.qlipbod.sync.daemon.DaemonRuntime
+import dev.qlipbod.sync.daemon.SyncDaemon
 import dev.qlipbod.sync.discovery.DiscoveryService
 import dev.qlipbod.sync.discovery.DiscoveryStatus
 import dev.qlipbod.sync.engine.SystemMonotonicClock

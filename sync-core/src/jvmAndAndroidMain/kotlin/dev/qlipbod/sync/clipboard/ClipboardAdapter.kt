@@ -1,4 +1,4 @@
-package dev.qlipbod.app.linux.clipboard
+package dev.qlipbod.sync.clipboard
 
 /**
  * The platform clipboard plane (plan §8). Linux implements this with `xclip` over the

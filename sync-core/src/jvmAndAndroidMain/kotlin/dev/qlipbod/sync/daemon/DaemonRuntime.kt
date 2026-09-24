@@ -1,6 +1,5 @@
-package dev.qlipbod.app.linux.daemon
+package dev.qlipbod.sync.daemon
 
-import dev.qlipbod.app.linux.discovery.AutoConnect
 import dev.qlipbod.sync.QlipbodDefaults
 import dev.qlipbod.sync.discovery.DiscoveryService
 import dev.qlipbod.sync.discovery.DiscoveryStatus

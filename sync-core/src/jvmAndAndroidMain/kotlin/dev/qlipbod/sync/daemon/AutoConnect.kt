@@ -1,6 +1,5 @@
-package dev.qlipbod.app.linux.discovery
+package dev.qlipbod.sync.daemon
 
-import dev.qlipbod.app.linux.daemon.SyncDaemon
 import dev.qlipbod.sync.discovery.DiscoveredDevice
 import dev.qlipbod.sync.discovery.DiscoveryListener
 import dev.qlipbod.sync.discovery.DiscoveryService

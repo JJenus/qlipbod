@@ -1,7 +1,6 @@
-package dev.qlipbod.app.linux.daemon
+package dev.qlipbod.sync.daemon
 
-import dev.qlipbod.app.linux.clipboard.ClipboardAdapter
-import dev.qlipbod.app.linux.transport.PeerConnection
+import dev.qlipbod.sync.clipboard.ClipboardAdapter
 import dev.qlipbod.sync.engine.EngineListener
 import dev.qlipbod.sync.engine.EventSink
 import dev.qlipbod.sync.engine.MonotonicClock
